@@ -5,13 +5,18 @@
 此处给出MinGW下编译方法。
 ### Windows
 请确保`mingw64/bin`已经被添加至`PATH`环境变量。
+#### 1.编译sqlite3.c
 ```cmd
-g++ main.cpp -o main -lws2_32 -Ivendor/sqlite3 -Ivendor/cpp-httplib -Ivendor/nlohmann-json
+gcc -c vendor/sqlite3/sqlite3.c -o sqlite3.o -O2
+```
+#### 2.编译主程序
+```cmd
+g++ -std=c++17 -O2 -Isrc -Ivendor/cpp-httplib -Ivendor/nlohmann-json -Ivendor/sqlite3 src/main.cpp sqlite3.o -o main.exe -lws2_32
 ```
 ### Linux
 #### 1.安装g++
 ```bash
-sudo apt install g++
+sudo apt install gcc g++
 ```
 #### 2.配置SQLite环境（可选）
 ```bash
@@ -20,9 +25,12 @@ sudo apt install libsqlite3-dev
 #### 3.编译
 如果执行了第二步，则执行
 ```bash
-g++ main.cpp -o main -lsqlite3 -Ivendor/cpp-httplib -Ivendor/nlohmann-json
+g++ -std=c++17 -O2 -Isrc -Ivendor/cpp-httplib -Ivendor/nlohmann-json src/main.cpp -o main.exe -lsqlite3
 ```
 否则执行
 ```bash
-g++ main.cpp -o main -Ivendor/sqlite3 -Ivendor/cpp-httplib -Ivendor/nlohmann-json
+gcc -c vendor/sqlite3/sqlite3.c -o sqlite3.o -O2
+```
+```bash
+g++ -std=c++17 -O2 -Isrc -Ivendor/cpp-httplib -Ivendor/nlohmann-json -Ivendor/sqlite3 src/main.cpp sqlite3.o -o main.exe
 ```

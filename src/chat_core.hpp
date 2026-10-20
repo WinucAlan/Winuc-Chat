@@ -539,10 +539,12 @@ void init()
 {
 	SafeStmt stmt;
 	stmt.prepare(db,
-				 "CREATE TABLE IF NOT EXISTS user("
+		 "CREATE TABLE IF NOT EXISTS user("
 			 "username TEXT NOT NULL,"
 			 "password TEXT NOT NULL"
-		 ");"
+		 ");");
+	stmt.step();
+	stmt.prepare(db,
 		 "CREATE TABLE IF NOT EXISTS user_friend("
 			 "owner TEXT NOT NULL,"
 			 "friend TEXT NOT NULL,"
@@ -550,13 +552,17 @@ void init()
 			 "is_new INT NOT NULL,"
 			 "PRIMARY KEY(owner, friend),"
 			 "FOREIGN KEY(owner) REFERENCES user(username) ON DELETE CASCADE"
-		 ");"
+		 ");");
+	stmt.step();
+	stmt.prepare(db,
 		 "CREATE TABLE IF NOT EXISTS user_friend_apply("
 			 "owner TEXT NOT NULL,"
 			 "apply TEXT NOT NULL,"
 			 "PRIMARY KEY(owner, apply),"
 			 "FOREIGN KEY(owner) REFERENCES user(username) ON DELETE CASCADE"
-		 ");"
+		 ");");
+	stmt.step();
+	stmt.prepare(db,
 		 "CREATE TABLE IF NOT EXISTS private_chat("
 			 "user_a TEXT NOT NULL,"
 			 "user_b TEXT NOT NULL,"
@@ -566,7 +572,9 @@ void init()
 			 "msg_content TEXT NOT NULL,"
 			 "msg_time INT NOT NULL,"
 			 "PRIMARY KEY(user_a, user_b, msg_id)"
-		 ");"
+		 ");");
+	stmt.step();
+	stmt.prepare(db,
 		 "CREATE TABLE IF NOT EXISTS group_main("
 			 "msg_id INT PRIMARY KEY NOT NULL,"
 			 "msg_type TEXT NOT NULL,"
