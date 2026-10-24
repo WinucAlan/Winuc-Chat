@@ -11,7 +11,7 @@ gcc -c vendor/sqlite3/sqlite3.c -o sqlite3.o -O2
 ```
 #### 2.编译主程序
 ```cmd
-g++ -std=c++17 -O2 -Isrc -Ivendor/cpp-httplib -Ivendor/nlohmann-json -Ivendor/sqlite3 src/main.cpp sqlite3.o -o main.exe -lws2_32
+g++ -std=c++17 -O2 -Isrc -Ivendor/cpp-httplib -Ivendor/nlohmann-json -Ivendor/sqlite3 src/main.cpp sqlite3.o -o src/main.exe -lws2_32
 ```
 ### Linux
 #### 1.安装g++
@@ -25,12 +25,12 @@ sudo apt install libsqlite3-dev
 #### 3.编译
 如果执行了第二步，则执行
 ```bash
-g++ -std=c++17 -O2 -Isrc -Ivendor/cpp-httplib -Ivendor/nlohmann-json src/main.cpp -o main.exe -lsqlite3
+g++ -std=c++17 -O2 -Isrc -Ivendor/cpp-httplib -Ivendor/nlohmann-json src/main.cpp -o src/main.exe -lsqlite3
 ```
 否则执行
 ```bash
 gcc -c vendor/sqlite3/sqlite3.c -o sqlite3.o -O2
 ```
 ```bash
-g++ -std=c++17 -O2 -Isrc -Ivendor/cpp-httplib -Ivendor/nlohmann-json -Ivendor/sqlite3 src/main.cpp sqlite3.o -o main.exe
+g++ -std=c++17 -O2 -Isrc -Ivendor/cpp-httplib -Ivendor/nlohmann-json -Ivendor/sqlite3 src/main.cpp sqlite3.o -o src/main.exe
 ```
