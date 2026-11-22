@@ -26,6 +26,21 @@ bool handle_login(json js)
 	}
 	return false;
 }
+bool handle_register(json js)
+{
+	if(!js.contains("username")||!js.contains("password"))
+		return false;
+	string username=getStr(js,"username"),password=getStr(js,"password");
+	SafeStmt stmt;
+	stmt.prepare(db,"SELECT 1 FROM user WHERE username = ? LIMIT 1;");
+	stmt.bind({username});
+	if(stmt.step().first==SQLITE_ROW)
+		return false;
+	stmt.prepare(db,"INSERT INTO user (username, password) VALUES(?, ?);");
+	stmt.bind({username,password});
+	if(stmt.step().first!=SQLITE_DONE) return false;
+	return true;
+}
 
 string handle_send_msg_group_main(json js,const string &username,const int &event_id)
 {
@@ -472,7 +487,12 @@ void handle_ws(const Request &req,ws::WebSocket &ws)
 					ws.send(json({{"event",event_id},{"success",false}}).dump());
 			}
 			else if(type=="register")
-				ws.send(json({{"event",event_id},{"success",false},{"error",u8"注册入口已经关闭，请联系腐竹"}}).dump());
+			{
+				if(handle_register(js))
+					ws.send(json({{"event",event_id},{"success",true}}).dump());
+				else
+					ws.send(json({{"event",event_id},{"success",false},{"error",u8"用户已经存在"}}).dump());
+			}
 			else if(username.empty())
 				ws.send(json({{"event",event_id},{"success",false},{"error",u8"未登录"}}).dump());
 			else if(type=="send")
