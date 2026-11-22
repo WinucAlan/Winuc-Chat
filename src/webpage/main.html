@@ -265,7 +265,6 @@
   function genTempId() { return 'temp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8); }
 
   // ============ 1.5 引用编解码（利用 msg_content 隐藏元数据） ============
-  // 使用 U+2063 (INVISIBLE SEPARATOR) 作为包裹标记，肉眼不可见，不会与普通用户输入冲突
   const QUOTE_MARK = '\u2063';
 
   function encodeQuote(quote, text) {
@@ -298,6 +297,18 @@
     }
   }
 
+  // ============ 1.6 Token 存取（免登录认证） ============
+  const TOKEN_KEY = 'chat_token';
+  function getToken() {
+    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+  }
+  function saveToken(t) {
+    try { if (t) localStorage.setItem(TOKEN_KEY, String(t)); } catch (e) {}
+  }
+  function clearToken() {
+    try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  }
+
   // ================= 2. 全局状态 =================
   const state = {
     isRegistering: false,
@@ -310,7 +321,8 @@
     hasMoreMessages: false,
     isLoadingMore: false,
     loadSeq: 0,
-    quoteTarget: null   // { msg_id, senderName, content, msg_type }
+    quoteTarget: null,
+    authing: false        // 防止自动登录/手动登录并发
   };
   const $ = id => document.getElementById(id);
   const app = $('app');
@@ -322,8 +334,9 @@
 
     state.ws.onopen = () => {
       state.wsConnected = true;
-      $('ws-status-login').innerText = '服务器已连接';
-      $('ws-status-login').style.color = 'var(--text-secondary)';
+      setLoginStatus('服务器已连接');
+      // 连接成功后尝试免登录认证
+      tryAutoLogin();
     };
     state.ws.onerror = () => {};
     state.ws.onclose = () => {
@@ -336,8 +349,7 @@
         alert("连接断开，请刷新页面重新登录。");
         location.reload();
       } else {
-        $('ws-status-login').innerText = '连接失败，请检查服务端';
-        $('ws-status-login').style.color = 'var(--danger)';
+        setLoginStatus('连接失败，请检查服务端', 'var(--danger)');
       }
     };
     state.ws.onmessage = (e) => {
@@ -613,7 +625,6 @@
     renderQuoteBar();
     const ta = $('input-msg');
     ta.focus();
-    // 光标放到末尾
     const len = ta.value.length;
     try { ta.setSelectionRange(len, len); } catch (e) {}
   }
@@ -638,7 +649,7 @@
     state.messages = [];
     state.hasMoreMessages = false;
     state.isLoadingMore = false;
-    clearQuote(); // 切换会话时清掉引用状态
+    clearQuote();
     $('messages').innerHTML = '<div class="load-more-trigger">加载中...</div>';
 
     try {
@@ -710,29 +721,110 @@
     }
   }
 
-  // ================= 6. 业务逻辑 =================
+  // ================= 6. 登录 / 免登录认证 / 业务逻辑 =================
+  function setLoginStatus(text, color) {
+    const el = $('ws-status-login');
+    el.innerText = text || '';
+    el.style.color = color || 'var(--text-secondary)';
+  }
+
+  // 进入聊天主界面（登录成功或免登录认证成功后调用）
+  async function enterMain(displayName, rawName) {
+    if (state.currentUser) return;  // 已经进入过，避免重复
+    state.currentUser = displayName;
+    state.currentUserRaw = rawName;
+
+    $('login-error').innerText = '';
+    $('view-login').classList.add('hidden');
+    $('view-main').classList.remove('hidden');
+    $('current-user-display').innerText = displayName;
+    bindScrollEvent();
+
+    try {
+      await refreshFriends();
+      await refreshApplies();
+      await loadMessages('group_main');
+      sendRequest('readed', { chat_id: 'group_main' }).catch(() => {});
+    } catch (e) {}
+  }
+
+  // WebSocket 连接成功后尝试免登录认证
+  async function tryAutoLogin() {
+    const token = getToken();
+    if (!token) {
+      setLoginStatus('请输入账号密码登录');
+      return;
+    }
+    if (state.authing || state.currentUser) return;
+    state.authing = true;
+
+    setLoginStatus('正在免登录认证...');
+    try {
+      const res = await sendRequest('verify', { token });
+      if (res && res.success && res.username) {
+        // 刷新 token（服务端可能下发 next_token）
+        saveToken(res.next_token || token);
+        const rawName = res.username;
+        const displayName = b64ToStr(rawName) || rawName;
+        state.authing = false;
+        setLoginStatus('');
+        await enterMain(displayName, rawName);
+      } else {
+        // 认证失败，清除本地 token，回到登录界面
+        clearToken();
+        setLoginStatus('免登录已失效，请重新登录', 'var(--danger)');
+      }
+    } catch (e) {
+      const msg = (e && e.message) || '';
+      if (msg === 'WS Closed' || msg === 'WS Disconnected') {
+        setLoginStatus('连接已断开，请刷新页面', 'var(--danger)');
+      } else {
+        clearToken();
+        setLoginStatus('免登录认证失败，请重新登录', 'var(--danger)');
+      }
+    } finally {
+      state.authing = false;
+    }
+  }
+
   async function doAuth() {
+    if (state.authing || state.currentUser) return;
     const u = $('input-username').value, p = $('input-password').value;
     if (!u || !p) { $('login-error').innerText = '请输入账号密码'; return; }
+
+    state.authing = true;
     $('login-error').innerText = '正在认证...';
     try {
       const type = state.isRegistering ? 'register' : 'login';
       const res = await sendRequest(type, { username: strToB64(u), password: strToB64(p) });
+      if (!res) { $('login-error').innerText = '认证失败'; return; }
+
       if (res.success) {
-        state.currentUser = u;
-        state.currentUserRaw = strToB64(u);
         $('login-error').innerText = '';
-        $('view-login').classList.add('hidden');
-        $('view-main').classList.remove('hidden');
-        $('current-user-display').innerText = state.currentUser;
-        bindScrollEvent();
-        await refreshFriends();
-        await refreshApplies();
-        await loadMessages('group_main');
+
+        if (state.isRegistering) {
+          // 注册接口不返回 token，切回登录模式
+          state.isRegistering = false;
+          $('login-title').innerText = '欢迎回来';
+          $('btn-auth').innerText = '登 录';
+          setLoginStatus('注册成功，请登录', 'var(--accent)');
+          return;
+        }
+
+        // 登录成功：保存 token（供下次免登录使用）
+        if (res.token) saveToken(res.token);
+
+        state.authing = false;
+        await enterMain(u, strToB64(u));
+        return;
       } else {
         $('login-error').innerText = res.error || '认证失败';
       }
-    } catch (e) { $('login-error').innerText = '网络错误'; }
+    } catch (e) {
+      $('login-error').innerText = '网络错误';
+    } finally {
+      state.authing = false;
+    }
   }
 
   async function refreshFriends() {
@@ -819,7 +911,6 @@
     const text = $('input-msg').value;
     if (!text || !text.trim()) return;
 
-    // 如果存在引用，把引用元数据“隐形”包裹在内容最前面
     const payloadText = state.quoteTarget
       ? encodeQuote(state.quoteTarget, text)
       : text;
@@ -827,7 +918,7 @@
     const ok = await sendContent({
       msg_type: 'text',
       msg_content: strToB64(payloadText),
-      previewText: text   // 失败恢复时使用原始文本
+      previewText: text
     });
 
     if (ok) {
@@ -863,7 +954,6 @@
     state.messages[idx] = { ...original, msg_type: 'recall', content: '', url: undefined, __temp: false };
     renderMessages();
 
-    // 如果正在引用的就是这条消息，取消引用状态
     if (state.quoteTarget && String(state.quoteTarget.msg_id) === String(numericMsgId)) {
       clearQuote();
     }
@@ -895,6 +985,7 @@
     state.isRegistering = !state.isRegistering;
     $('login-title').innerText = state.isRegistering ? '注册新账号' : '欢迎回来';
     $('btn-auth').innerText = state.isRegistering ? '注 册' : '登 录';
+    $('login-error').innerText = '';
   };
   $('input-password').onkeydown = (e) => { if (e.key === 'Enter') doAuth(); };
   $('btn-theme').onclick = () => {
@@ -902,7 +993,12 @@
     app.dataset.theme = next;
     localStorage.setItem('chat_theme', next);
   };
-  $('btn-logout').onclick = () => location.reload();
+  // 退出登录：清除本地 token 后再刷新，避免自动免登录
+  $('btn-logout').onclick = () => {
+    if (!confirm('确定要退出登录吗？')) return;
+    clearToken();
+    location.reload();
+  };
 
   $('chat-list').onclick = (e) => {
     const item = e.target.closest('.chat-item');
@@ -920,7 +1016,6 @@
   $('btn-send').onclick = sendMessage;
   $('input-msg').onkeydown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-    // 输入框清空且按退格时，如果内容为空则取消引用（常见 IM 交互）
     if (e.key === 'Backspace' && !e.shiftKey) {
       setTimeout(() => {
         if ($('input-msg').value === '' && state.quoteTarget) clearQuote();
@@ -935,9 +1030,7 @@
     e.target.value = '';
   };
 
-  // 消息区域点击：撤回 / 引用 / 点击引用块跳转
   $('messages').addEventListener('click', (e) => {
-    // 1. 点击消息内部的引用块 -> 定位到原消息
     const quoteEl = e.target.closest('.msg-quote[data-quote-msg-id]');
     if (quoteEl) {
       e.stopPropagation();
@@ -946,7 +1039,6 @@
       return;
     }
 
-    // 2. 点击操作按钮
     const btn = e.target.closest('.msg-action-btn');
     if (!btn) return;
     e.stopPropagation();
@@ -961,7 +1053,6 @@
     }
   });
 
-  // 引用条关闭按钮
   $('quote-bar-close').onclick = () => clearQuote();
 
   $('btn-show-apply').onclick = () => {

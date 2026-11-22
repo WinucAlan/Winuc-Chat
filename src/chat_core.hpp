@@ -3,8 +3,9 @@
 
 #include"tools.hpp"
 
-unordered_map<string,ws::WebSocket*>mp;
-mutex mp_mtx;
+unordered_map<string,ws::WebSocket*>usernameToSocket;
+unordered_map<string,pair<string,int>> tokenToUsername;
+mutex usernameToSocket_mtx,tokenToUsername_mtx;
 
 bool handle_login(json js)
 {
@@ -49,9 +50,9 @@ string handle_send_msg_group_main(json js,const string &username,const int &even
 	stmt.step();
 	//向所有在线用户发送
 	{
-		lock_guard lock(mp_mtx);
+		lock_guard lock(usernameToSocket_mtx);
 		json tmp={{"type","new_message"},{"chat_id","group_main"},{"msg_id",msg_id}};
-		for(auto online_user:mp)
+		for(auto online_user:usernameToSocket)
 			online_user.second->send(tmp.dump());
 	}
 	return json({{"event",event_id},{"success",true}}).dump();
@@ -90,11 +91,11 @@ string handle_send_msg_private(json js,const string &username,const int &event_i
 	stmt.step();
 	//向对方发送
 	{
-		lock_guard lock(mp_mtx);
-		if(mp.count(target))
+		lock_guard lock(usernameToSocket_mtx);
+		if(usernameToSocket.count(target))
 		{
 			json tmp={{"type","new_message"},{"chat_id","private_"+username},{"msg_id",msg_id}};
-			mp[target]->send(tmp.dump());
+			usernameToSocket[target]->send(tmp.dump());
 		}
 	}
 	return json({{"event",event_id},{"success",true}}).dump();
@@ -131,9 +132,9 @@ string handle_recall_group_main(json js,const string &username,const int &event_
 			stmt.step();
 			//向所有在线用户发送
 			{
-				lock_guard lock(mp_mtx);
+				lock_guard lock(usernameToSocket_mtx);
 				json tmp={{"type","new_message"},{"chat_id","group_main"},{"msg_id",recall_id}};
-				for(auto online_user:mp)
+				for(auto online_user:usernameToSocket)
 					online_user.second->send(tmp.dump());
 			}
 		}
@@ -174,11 +175,11 @@ string handle_recall_private(json js,const string &username,const int &event_id)
 			stmt.step();
 			//向对方发送
 			{
-				lock_guard lock(mp_mtx);
-				if(mp.count(target))
+				lock_guard lock(usernameToSocket_mtx);
+				if(usernameToSocket.count(target))
 				{
 					json tmp={{"type","new_message"},{"chat_id","private_"+username},{"msg_id",recall_id}};
-					mp[target]->send(tmp.dump());
+					usernameToSocket[target]->send(tmp.dump());
 				}
 			}
 		}
@@ -321,9 +322,9 @@ string handle_add_friend(const string &username,const string &target,const int &
 	stmt.step();
 	//发送给对方
 	{
-		lock_guard lock(mp_mtx);
-		if(mp.count(target))
-			mp[target]->send(json({{"type","new_apply"},{"from",username}}).dump());
+		lock_guard lock(usernameToSocket_mtx);
+		if(usernameToSocket.count(target))
+			usernameToSocket[target]->send(json({{"type","new_apply"},{"from",username}}).dump());
 	}
 	return json({{"event",event_id},{"success",true}}).dump();
 }
@@ -348,9 +349,9 @@ string handle_accept_friend_apply(const string &username,const string &target,co
 	stmt.step();
 	
 	{
-		lock_guard lock(mp_mtx);
-		if(mp.count(target))
-			mp[target]->send(json({{"type","accepted_apply"},{"target",username}}).dump());
+		lock_guard lock(usernameToSocket_mtx);
+		if(usernameToSocket.count(target))
+			usernameToSocket[target]->send(json({{"type","accepted_apply"},{"target",username}}).dump());
 	}
 	return json({{"event",event_id},{"success",true}}).dump();
 }
@@ -369,9 +370,9 @@ string handle_reject_friend_apply(const string &username,const string &target,co
 	stmt.step();
 	
 	{
-		lock_guard lock(mp_mtx);
-		if(mp.count(target))
-			mp[target]->send(json({{"type","rejected_apply"},{"target",username}}).dump());
+		lock_guard lock(usernameToSocket_mtx);
+		if(usernameToSocket.count(target))
+			usernameToSocket[target]->send(json({{"type","rejected_apply"},{"target",username}}).dump());
 	}
 	return json({{"event",event_id},{"success",true}}).dump();
 }
@@ -400,6 +401,15 @@ string handle_get_message_count(const string &chat_id,const string &username,con
 		return json({{"event",event_id},{"success",false},{"error",u8"错误的请求参数\"chat_id\""}}).dump();
 }
 
+bool handle_verify(const string &token,string &username)
+{
+	if(token.empty()) return false;
+	lock_guard lock(tokenToUsername_mtx);
+	if(tokenToUsername.count(token))
+		username=tokenToUsername[token].first;
+	return true;
+}
+
 void handle_ws(const Request &req,ws::WebSocket &ws)
 {
 	printf("%s[INFO]New WebSocket connect\n",getTime().c_str());
@@ -417,13 +427,45 @@ void handle_ws(const Request &req,ws::WebSocket &ws)
 				if(handle_login(js))
 				{
 					username=getStr(js,"username");
-					ws.send(json({{"event",event_id},{"success",true}}).dump());
+					string nxtToken=SHAByDeepSeek::sha256(username+to_string(time(0)));
+					ws.send(json({{"event",event_id},{"success",true},{"token",nxtToken}}).dump());
 					
 					{
-						lock_guard lock(mp_mtx);
-						if(mp.count(username))
-							mp[username]->close();
-						mp[username]=&ws;
+						lock_guard lock(tokenToUsername_mtx);
+						tokenToUsername[nxtToken]=make_pair(username,1);
+					}
+					{
+						lock_guard lock(usernameToSocket_mtx);
+						if(usernameToSocket.count(username))
+							usernameToSocket[username]->close();
+						usernameToSocket[username]=&ws;
+					}
+				}
+				else
+					ws.send(json({{"event",event_id},{"success",false}}).dump());
+			}
+			else if(type=="verify")
+			{
+				string token=getStr(js,"token");
+				if(handle_verify(token,username))
+				{
+					string nxtToken=SHAByDeepSeek::sha256(token+to_string(time(0)));
+					ws.send(json({{"event",event_id},{"success",true},{"username",username},{"next_token",nxtToken}}).dump());
+					
+					{
+						lock_guard lock(tokenToUsername_mtx);
+						int cnt=tokenToUsername[token].second;
+						if(cnt<30)
+						{
+							tokenToUsername.erase(token);
+							tokenToUsername[nxtToken]=make_pair(username,cnt+1);
+						}
+					}
+					{
+						lock_guard lock(usernameToSocket_mtx);
+						if(usernameToSocket.count(username))
+							usernameToSocket[username]->close();
+						usernameToSocket[username]=&ws;
 					}
 				}
 				else
@@ -528,9 +570,9 @@ void handle_ws(const Request &req,ws::WebSocket &ws)
 		}
 	}
 	{
-		lock_guard lock(mp_mtx);
-		if(mp.count(username)&&mp[username]==&ws)
-			mp.erase(username);
+		lock_guard lock(usernameToSocket_mtx);
+		if(usernameToSocket.count(username)&&usernameToSocket[username]==&ws)
+			usernameToSocket.erase(username);
 	}
 	printf("%s[INFO]Disconnected!\n",getTime().c_str());
 }
