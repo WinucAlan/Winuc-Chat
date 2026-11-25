@@ -67,6 +67,15 @@
     .message.self .msg-content { background: var(--bg-msg-self); }
     .msg-content img { max-width: 240px; max-height: 320px; border-radius: 8px; display: block; }
     .msg-content a { color: var(--accent); text-decoration: none; word-break: break-all; }
+    /* 文件下载链接：文件名过长时显示省略号 */
+    .msg-content a.file-link {
+      display: inline-block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: bottom;
+    }
     .msg-content .msg-recalled { color: var(--text-secondary); font-style: italic; font-size: 0.85rem; }
     .msg-content .msg-pending { opacity: 0.65; }
     .msg-time { font-size: 0.7rem; color: var(--text-secondary); margin-top: 0.25rem; }
@@ -264,8 +273,10 @@
   function isTempId(id) { return typeof id === 'string' && id.startsWith('temp_'); }
   function genTempId() { return 'temp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8); }
 
-  // ============ 1.5 引用编解码（利用 msg_content 隐藏元数据） ============
+  // ============ 1.5 引用 / 文件名编解码（利用隐形标记携带元数据） ============
+  // U+2063 (INVISIBLE SEPARATOR)：肉眼不可见，不会与普通用户输入冲突
   const QUOTE_MARK = '\u2063';
+  const FILE_MARK = '\u2063';
 
   function encodeQuote(quote, text) {
     if (!quote) return text;
@@ -297,6 +308,32 @@
     }
   }
 
+  // 把文件名隐形附加到 url 前面（服务端不会解析 url，原样存储转发）
+  function encodeFileUrl(name, url) {
+    if (!name) return url;
+    try {
+      const meta = strToB64(JSON.stringify({ name: String(name).slice(0, 200) }));
+      return FILE_MARK + meta + FILE_MARK + url;
+    } catch (e) { return url; }
+  }
+
+  // 从 url 中拆出文件名与真实资源地址；老消息无文件名时 name 为空
+  function parseFileUrl(raw) {
+    if (typeof raw !== 'string' || !raw || raw.charCodeAt(0) !== 0x2063) {
+      return { name: '', url: raw || '' };
+    }
+    const end = raw.indexOf(FILE_MARK, 1);
+    if (end === -1) return { name: '', url: raw };
+    const b64 = raw.slice(1, end);
+    const rest = raw.slice(end + 1);
+    try {
+      const meta = JSON.parse(b64ToStr(b64));
+      return { name: (meta && meta.name) ? String(meta.name) : '', url: rest };
+    } catch (e) {
+      return { name: '', url: raw };
+    }
+  }
+
   // ============ 1.6 Token 存取（免登录认证） ============
   const TOKEN_KEY = 'chat_token';
   function getToken() {
@@ -322,7 +359,7 @@
     isLoadingMore: false,
     loadSeq: 0,
     quoteTarget: null,
-    authing: false        // 防止自动登录/手动登录并发
+    authing: false
   };
   const $ = id => document.getElementById(id);
   const app = $('app');
@@ -335,7 +372,6 @@
     state.ws.onopen = () => {
       state.wsConnected = true;
       setLoginStatus('服务器已连接');
-      // 连接成功后尝试免登录认证
       tryAutoLogin();
     };
     state.ws.onerror = () => {};
@@ -529,8 +565,11 @@
         const src = resolveUrl(msg.url);
         content = `<img src="${escapeHtml(src)}" alt="image" loading="lazy" />`;
       } else if (msg.msg_type === 'file') {
-        const href = resolveUrl(msg.url);
-        content = `<a href="${escapeHtml(href)}" target="_blank" rel="noopener" download>📎 下载文件</a>`;
+        // 解析隐形附加的文件名
+        const pf = parseFileUrl(msg.url);
+        const href = resolveUrl(pf.url);
+        const fname = pf.name || '下载文件';
+        content = `<a class="file-link" href="${escapeHtml(href)}" target="_blank" rel="noopener" download="${escapeHtml(fname)}" title="${escapeHtml(fname)}">📎 ${escapeHtml(fname)}</a>`;
       } else {
         content = `<span style="color:var(--text-secondary)">[不支持的消息类型: ${escapeHtml(msg.msg_type)}]</span>`;
       }
@@ -613,7 +652,8 @@
     } else if (msg.msg_type === 'image') {
       preview = '[图片]';
     } else if (msg.msg_type === 'file') {
-      preview = '[文件]';
+      const pf = parseFileUrl(msg.url);
+      preview = pf.name ? `[文件] ${pf.name}` : '[文件]';
     }
 
     state.quoteTarget = {
@@ -728,9 +768,8 @@
     el.style.color = color || 'var(--text-secondary)';
   }
 
-  // 进入聊天主界面（登录成功或免登录认证成功后调用）
   async function enterMain(displayName, rawName) {
-    if (state.currentUser) return;  // 已经进入过，避免重复
+    if (state.currentUser) return;
     state.currentUser = displayName;
     state.currentUserRaw = rawName;
 
@@ -748,7 +787,6 @@
     } catch (e) {}
   }
 
-  // WebSocket 连接成功后尝试免登录认证
   async function tryAutoLogin() {
     const token = getToken();
     if (!token) {
@@ -762,7 +800,6 @@
     try {
       const res = await sendRequest('verify', { token });
       if (res && res.success && res.username) {
-        // 刷新 token（服务端可能下发 next_token）
         saveToken(res.next_token || token);
         const rawName = res.username;
         const displayName = b64ToStr(rawName) || rawName;
@@ -770,7 +807,6 @@
         setLoginStatus('');
         await enterMain(displayName, rawName);
       } else {
-        // 认证失败，清除本地 token，回到登录界面
         clearToken();
         setLoginStatus('免登录已失效，请重新登录', 'var(--danger)');
       }
@@ -803,7 +839,6 @@
         $('login-error').innerText = '';
 
         if (state.isRegistering) {
-          // 注册接口不返回 token，切回登录模式
           state.isRegistering = false;
           $('login-title').innerText = '欢迎回来';
           $('btn-auth').innerText = '登 录';
@@ -811,7 +846,6 @@
           return;
         }
 
-        // 登录成功：保存 token（供下次免登录使用）
         if (res.token) saveToken(res.token);
 
         state.authing = false;
@@ -935,7 +969,9 @@
     const reader = new FileReader();
     reader.onload = async () => {
       const dataUrl = String(reader.result || '');
-      await sendContent({ msg_type, url: dataUrl });
+      // 文件消息把文件名隐形附加到 url 前，图片不加
+      const url = msg_type === 'file' ? encodeFileUrl(file.name, dataUrl) : dataUrl;
+      await sendContent({ msg_type, url });
     };
     reader.onerror = () => alert('读取文件失败');
     reader.readAsDataURL(file);
@@ -993,7 +1029,6 @@
     app.dataset.theme = next;
     localStorage.setItem('chat_theme', next);
   };
-  // 退出登录：清除本地 token 后再刷新，避免自动免登录
   $('btn-logout').onclick = () => {
     if (!confirm('确定要退出登录吗？')) return;
     clearToken();
